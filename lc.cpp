@@ -128,7 +128,7 @@ int main(int argc, char* argv [])
     comp_list = getStages(comp_name2num, argv[4], stages, algorithms);
     explicit_list_mode = false;
     if (algorithms < 1) {fprintf(stderr, "ERROR: need at least one algorithm\n\n"); throw std::runtime_error("LC error");}
-    conf = {false, false, false, false, false, false, false};  // -speed, -size, -warmup, -memcopy, -decom, -verify, +csv
+    conf = {true, false, false, false, false, false, false};  // +speed, -size, -warmup, -memcopy, -decom, -verify, -csv
     ext = ".CR" + std::to_string(stages);
 
   } else if (strcmp(argv[2], "EX") == 0) {  // exhaustive with all metrics
@@ -881,7 +881,7 @@ int main(int argc, char* argv [])
     hbestLenBits += 17*hchunks + 14; // 14 bits + 3 bits for algorithm per chunck to compressed size and algorithm used, 14 bits to store decompressed size of last chunk
     hbestLen += (hbestLenBits+7)/8; //Change to bytes for fair comparison
     const float hbestPC = (100.0 * hbestLen) / insize;
-
+    printf("Number of Chunks: %lld \n", hchunks);
     printf("Overall best\n------------\n");
     printf("preprocs: %s\n", getPreprocessors(prepros).c_str());
     printf("pipeline: %s\n", getPipeline(hbestPipe, stages).c_str());
