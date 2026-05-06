@@ -1,3 +1,7 @@
+# Note to self:
+
+To run the modified version of lc (lc.cpp and lc.h in repo), you must run generate_Host_LC-Framework.py, then do git restore on lc.cpp and lc.h. This generates the header files needed for lc.cpp and lc.h to compile.
+
 # LC Framework
 
 LC is a framework for automatically generating customized lossless and guaranteed-error-bounded lossy data-compression algorithms for individual files or groups of files. The resulting compressors and decompressors are parallelized and produce bit-for-bit the same result on CPUs and GPUs.
