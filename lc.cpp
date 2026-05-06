@@ -174,7 +174,7 @@ int main(int argc, char* argv [])
     chains = getChains(comp_name2num, argv[4], stages, algorithms);
     explicit_list_mode = true;
     if (algorithms < 1) {fprintf(stderr, "ERROR: need at least one algorithm\n\n"); throw std::runtime_error("LC error");}
-    conf = {false, false, false, false, false, false, true};  // -speed, -size, -warmup, -memcopy, -decom, -verify, +csv
+    conf = {false, false, false, false, false, false, false};  // -speed, -size, -warmup, -memcopy, -decom, -verify, -csv
     ext = ".CRL" + std::to_string(stages);
 
   } else {  // unknown mode
