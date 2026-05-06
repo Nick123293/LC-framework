@@ -128,7 +128,7 @@ int main(int argc, char* argv [])
     comp_list = getStages(comp_name2num, argv[4], stages, algorithms);
     explicit_list_mode = false;
     if (algorithms < 1) {fprintf(stderr, "ERROR: need at least one algorithm\n\n"); throw std::runtime_error("LC error");}
-    conf = {false, false, false, false, false, false, true};  // -speed, -size, -warmup, -memcopy, -decom, -verify, +csv
+    conf = {false, false, false, false, false, false, false};  // -speed, -size, -warmup, -memcopy, -decom, -verify, +csv
     ext = ".CR" + std::to_string(stages);
 
   } else if (strcmp(argv[2], "EX") == 0) {  // exhaustive with all metrics
@@ -875,8 +875,8 @@ int main(int argc, char* argv [])
 #endif
 
 #ifdef USE_CPU
-    int hbestLen = 0;
-    int hbestLenBits = 0;
+    long long int hbestLen = 0;
+    long long int hbestLenBits = 0;
     for (int i = 0; i < hchunks; i++) hbestLen += hbestSize[i];
     hbestLenBits += 17*hchunks + 14; // 14 bits + 3 bits for algorithm per chunck to compressed size and algorithm used, 14 bits to store decompressed size of last chunk
     hbestLen += (hbestLenBits+7)/8; //Change to bytes for fair comparison
