@@ -40,7 +40,7 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 //#define NDEBUG
 
 
-#include "lc.h"
+#include "lc_CRL.h"
 
 
 int main(int argc, char* argv [])
