@@ -40,7 +40,7 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 //#define NDEBUG
 
 
-#include "lc.h"
+#include "lc-gpu-wrapper-compatible.h"
 
 extern "C" int lc_run_device_memory(const byte* d_input_base,
                                     long long input_size,
@@ -392,14 +392,14 @@ int main(int argc, char* argv [])
     char regex [] = {'.', '+', ' ', '.', '+', 0};
     comp_list = getStages(comp_name2num, regex, stages, algorithms);
     explicit_list_mode = false;
-    conf = {false, false, false, false, true, true, false};  // -speed, -size, -warmup, -memcopy, +decom, +verify, -csv
+    conf = {false, false, true, false, true, true, false};  // -speed, -size, -warmup, -memcopy, +decom, +verify, -csv
   } else if (strcmp(argv[2], "CR") == 0) {  // exhaustive with only CR, no speed
     if (argc != 5) {printUsage(argv); return -1;}
     prepros = getItems(prepro_name2num, argv[3]);
     comp_list = getStages(comp_name2num, argv[4], stages, algorithms);
     explicit_list_mode = false;
     if (algorithms < 1) {fprintf(stderr, "ERROR: need at least one algorithm\n\n"); throw std::runtime_error("LC error");}
-    conf = {true, false, false, false, false, false, false};  // +speed, -size, -warmup, -memcopy, -decom, -verify, -csv
+    conf = {true, false, true, false, false, false, false};  // +speed, -size, -warmup, -memcopy, -decom, -verify, -csv
     ext = ".CR" + std::to_string(stages);
   } else if (strcmp(argv[2], "EX") == 0) {  // exhaustive with all metrics
     if ((argc != 5) && (argc != 6)) {printUsage(argv); return -1;}

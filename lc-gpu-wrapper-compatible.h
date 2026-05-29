@@ -551,6 +551,10 @@ void d_encode(const unsigned long long chain, const byte* const __restrict__ inp
         case TUPL6_4: good = d_TUPL6_4(csize, in, out, temp); break;
         case TUPL6_8: good = d_TUPL6_8(csize, in, out, temp); break;
         case TUPL8_1: good = d_TUPL8_1(csize, in, out, temp); break;
+        case UZZR_1: good = d_UZZR_1(csize, in, out, temp); break;
+        case UZZR_2: good = d_UZZR_2(csize, in, out, temp); break;
+        case UZZR_4: good = d_UZZR_4(csize, in, out, temp); break;
+        case UZZR_8: good = d_UZZR_8(csize, in, out, temp); break;
         /*##switch-device-encode-end##*/
       }
       pipeline >>= 8;
@@ -722,6 +726,10 @@ void d_decode(const unsigned long long chain, const byte* const __restrict__ inp
           case TUPL6_4: d_iTUPL6_4(csize, in, out, temp); break;
           case TUPL6_8: d_iTUPL6_8(csize, in, out, temp); break;
           case TUPL8_1: d_iTUPL8_1(csize, in, out, temp); break;
+          case UZZR_1: d_iUZZR_1(csize, in, out, temp); break;
+          case UZZR_2: d_iUZZR_2(csize, in, out, temp); break;
+          case UZZR_4: d_iUZZR_4(csize, in, out, temp); break;
+          case UZZR_8: d_iUZZR_8(csize, in, out, temp); break;
           /*##switch-device-decode-end##*/
         }
         __syncthreads();  // chunk transformed
@@ -1036,6 +1044,10 @@ static std::string getPipeline(unsigned long long pipeline, const int stages)
       case TUPL6_4: s += " TUPL6_4"; break;
       case TUPL6_8: s += " TUPL6_8"; break;
       case TUPL8_1: s += " TUPL8_1"; break;
+      case UZZR_1: s += " UZZR_1"; break;
+      case UZZR_2: s += " UZZR_2"; break;
+      case UZZR_4: s += " UZZR_4"; break;
+      case UZZR_8: s += " UZZR_8"; break;
       /*##switch-pipeline-end##*/
     }
     pipeline >>= 8;
@@ -1200,6 +1212,10 @@ static std::map<std::string, byte> getCompMap()
   components["TUPL6_4"] = 68;
   components["TUPL6_8"] = 69;
   components["TUPL8_1"] = 70;
+  components["UZZR_1"] = UZZR_1;
+  components["UZZR_2"] = UZZR_2;
+  components["UZZR_4"] = UZZR_4;
+  components["UZZR_8"] = UZZR_8;
   /*##component-map-end##*/
   return components;
 }
