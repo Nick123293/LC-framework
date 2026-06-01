@@ -41,7 +41,8 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 
 
 #include "lc-gpu-wrapper-compatible.h"
-
+/*Using extern "C" allows us to have a non-mangled function symbol for use in python shared library linking
+i.e. this is why we can call lib.lc_run_device_memory in lc_bindings.py*/
 extern "C" int lc_run_device_memory(const byte* d_input_base,
                                     long long input_size,
                                     long long offset,
@@ -65,7 +66,9 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
     if (length <= 0) throw std::runtime_error("selected range is empty");
     if (offset + length > input_size) throw std::runtime_error("selected range exceeds input size");
 
-    const char* mode = mode_c ? mode_c : "";
+    /*prevents program crashing if NULL arguments are passed, lc_bindings currently already prevents 
+    this but this makes this file safe if there are other callers*/
+    const char* mode = mode_c ? mode_c : ""; 
     const char* preprocessors = preprocessors_c ? preprocessors_c : "";
     const char* components = components_c ? components_c : "";
     const char* verifiers = verifiers_c ? verifiers_c : "";
@@ -124,7 +127,7 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
     }
     if (algorithms < 1) throw std::runtime_error("need at least one algorithm");
 
-    if (explicit_list_mode) {
+    if (explicit_list_mode) { //Differentiates between CRL and other options for pipeline printing
       printChains(prepros, prepro_name2num, chains, stages);
     } else {
       printStages(prepros, prepro_name2num, comp_list, comp_name2num, stages, algorithms);
@@ -150,6 +153,9 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
     long long dpredecsize = 0;
     double dpredectime = 0;
     byte* d_predecdata = NULL;
+    
+    /*Ensures decompressed data matches precompressed data exactly (i.e. this only works for lossless preprocessors)
+    This is not important for us since we are not focused on preprocessors, but should change in the future*/
     if (conf.decom) {
       cudaMalloc((void **)&d_predecdata, dpreencsize);
       cudaMemcpy(d_predecdata, d_preencdata, dpreencsize, cudaMemcpyDeviceToDevice);
@@ -181,13 +187,13 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
     cudaMalloc((void **)&d_decoded, dpreencsize);
     cudaMalloc((void **)&d_decsize, sizeof(long long));
     cudaMalloc((void **)&d_bestSize, sizeof(unsigned short) * dchunks);
-    initBestSize<<<1, TPB>>>(d_bestSize, dchunks);
+    initBestSize<<<1, TPB>>>(d_bestSize, dchunks); //sets best size of each chunk to CS for each chunk
     CheckCuda(__LINE__);
 
     float bestCR = 100.0;
     unsigned long long bestPipe = 0;
     long long bestEncSize = length;
-    std::vector<Elem> data;
+    std::vector<Elem> data; //Elem is a struct defined in header file
 
     auto run_chain = [&](const unsigned long long chain) {
       printf("pipeline: %s\n", getPipeline(chain, stages).c_str());
@@ -195,9 +201,10 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
         cudaMemset(d_encoded, -1, dmaxsize);
         cudaMemset(d_decoded, -1, dpreencsize);
       }
-
+      /*Runs warmup run, if this isn't set the first pipeline typically has much slower runtime then the rest
+      This is important when comparing timing results*/
       if (conf.warmup) {
-        long long* d_fullcarry;
+        long long* d_fullcarry; //Contains prefix sum of compressed chunk sizes for creating contiguous output buffer
         cudaMalloc((void **)&d_fullcarry, dchunks * sizeof(long long));
         d_reset<<<1, 1>>>();
         cudaMemset(d_fullcarry, 0, dchunks * sizeof(long long));
