@@ -95,18 +95,18 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
     if (strcmp(mode, "CR") == 0) {
       prepros = getItems(prepro_name2num, prepro_buf.data());
       comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
-      conf = {false, false, false, false, false, false, false};
+      conf = {false, false, false, false, false, false, false}; // -speed, -size, -warmup, -memcopy, -decom, -verify, -csv
     } else if (strcmp(mode, "EX") == 0) {
       prepros = getItems(prepro_name2num, prepro_buf.data());
       comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
       if (verifiers[0] != 0) verifs = getItems(verif_name2num, verif_buf.data());
-      conf = {false, false, true, false, true, true, false};
+      conf = {false, false, true, false, true, true, false}; // -speed, -size, +warmup, -memcopy, +decom, +verify, -csv
     } else if (strcmp(mode, "AL") == 0) {
       prepros = getItems(prepro_name2num, prepro_buf.data());
       comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
       if (verifiers[0] != 0) verifs = getItems(verif_name2num, verif_buf.data());
       if (algorithms != 1) throw std::runtime_error("AL mode requires one algorithm");
-      conf = {true, true, true, true, true, true, false};
+      conf = {true, true, true, true, true, true, false}; // +speed, +size, +warmup, +memcopy, +decom, +verify, -csv
     } else if (strcmp(mode, "PR") == 0) {
       prepros = getItems(prepro_name2num, prepro_buf.data());
       comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
@@ -116,7 +116,7 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
       prepros = getItems(prepro_name2num, prepro_buf.data());
       chains = getChains(comp_name2num, comp_buf.data(), stages, algorithms);
       explicit_list_mode = true;
-      conf = {false, false, false, false, false, false, false};
+      conf = {true, false, true, false, true, true, false}; // +speed, -size, +warmup, -memcopy, +decom, +verify, -csv
     } else if (strcmp(mode, "PRL") == 0) {
       prepros = getItems(prepro_name2num, prepro_buf.data());
       chains = getChains(comp_name2num, comp_buf.data(), stages, algorithms);
