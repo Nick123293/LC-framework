@@ -322,6 +322,468 @@ extern "C" int lc_run_device_memory(const byte* d_input_base,
 }
 
 
+extern "C" int lc_chain_to_pipeline(unsigned long long chain,
+                                    int stages,
+                                    char* output,
+                                    size_t output_size)
+{
+  try {
+    if (output == NULL) throw std::runtime_error("output buffer is null");
+    if (output_size == 0) throw std::runtime_error("output buffer size must be positive");
+    if (stages < 1 || stages > max_stages) throw std::runtime_error("invalid stage count");
+    const std::string pipeline = getPipeline(chain, stages);
+    if (pipeline.size() + 1 > output_size) {
+      output[0] = 0;
+      return (int)(pipeline.size() + 1);
+    }
+    std::snprintf(output, output_size, "%s", pipeline.c_str());
+    return 0;
+  } catch (const std::exception& e) {
+    if (output != NULL && output_size > 0) output[0] = 0;
+    fprintf(stderr, "ERROR: %s\n\n", e.what());
+    return -1;
+  }
+}
+
+
+extern "C" int lc_count_pipeline_chains(const char* mode_c,
+                                        const char* preprocessors_c,
+                                        const char* components_c,
+                                        long long* h_pipeline_count,
+                                        int* h_stages)
+{
+  try {
+    if (h_pipeline_count == NULL) throw std::runtime_error("h_pipeline_count is null");
+    if (h_stages == NULL) throw std::runtime_error("h_stages is null");
+    *h_pipeline_count = 0;
+    *h_stages = 0;
+
+    const char* mode = mode_c ? mode_c : "";
+    const char* preprocessors = preprocessors_c ? preprocessors_c : "";
+    const char* components = components_c ? components_c : "";
+
+    std::map<std::string, byte> prepro_name2num = getPreproMap();
+    std::map<std::string, byte> comp_name2num = getCompMap();
+
+    int stages = 0;
+    unsigned long long algorithms = 0;
+    std::vector<unsigned long long> chains;
+    std::vector<std::vector<byte>> comp_list;
+    std::vector<std::pair<byte, std::vector<double>>> prepros;
+
+    std::vector<char> prepro_buf(preprocessors, preprocessors + strlen(preprocessors) + 1);
+    std::vector<char> comp_buf(components, components + strlen(components) + 1);
+
+    if (strcmp(mode, "CR") == 0) {
+      prepros = getItems(prepro_name2num, prepro_buf.data());
+      comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
+    } else if (strcmp(mode, "CRL") == 0) {
+      prepros = getItems(prepro_name2num, prepro_buf.data());
+      chains = getChains(comp_name2num, comp_buf.data(), stages, algorithms);
+    } else {
+      throw std::runtime_error("lc_count_pipeline_chains supports CR and CRL modes");
+    }
+    (void)prepros;
+    (void)comp_list;
+    (void)chains;
+    if (algorithms < 1) throw std::runtime_error("need at least one algorithm");
+    if (algorithms > (unsigned long long)std::numeric_limits<long long>::max()) {
+      throw std::runtime_error("pipeline count exceeds long long range");
+    }
+
+    *h_pipeline_count = (long long)algorithms;
+    *h_stages = stages;
+    return 0;
+  } catch (const std::exception& e) {
+    if (h_pipeline_count != NULL) *h_pipeline_count = 0;
+    if (h_stages != NULL) *h_stages = 0;
+    fprintf(stderr, "ERROR: %s\n\n", e.what());
+    return -1;
+  }
+}
+
+
+extern "C" int lc_run_device_memory_block_best(const byte* d_input_base,
+                                               long long input_size,
+                                               long long offset,
+                                               long long length,
+                                               const char* mode_c,
+                                               const char* preprocessors_c,
+                                               const char* components_c,
+                                               const char* verifiers_c,
+                                               unsigned short* h_best_sizes,
+                                               unsigned long long* h_best_pipes,
+                                               long long* h_chunk_input_bytes,
+                                               long long max_chunks,
+                                               long long* h_chunk_count)
+{
+#ifndef USE_GPU
+  fprintf(stderr, "ERROR: lc_run_device_memory_block_best requires USE_GPU\n\n");
+  return -1;
+#else
+  try {
+    if (d_input_base == NULL) throw std::runtime_error("input device pointer is null");
+    if (h_best_sizes == NULL) throw std::runtime_error("h_best_sizes is null");
+    if (h_best_pipes == NULL) throw std::runtime_error("h_best_pipes is null");
+    if (h_chunk_input_bytes == NULL) throw std::runtime_error("h_chunk_input_bytes is null");
+    if (h_chunk_count == NULL) throw std::runtime_error("h_chunk_count is null");
+    if (input_size <= 0) throw std::runtime_error("input size must be positive");
+    if (offset < 0) throw std::runtime_error("offset must be non-negative");
+    if (length < 0) throw std::runtime_error("length must be non-negative");
+    if (offset > input_size) throw std::runtime_error("offset exceeds input size");
+    if (length == 0) length = input_size - offset;
+    if (length <= 0) throw std::runtime_error("selected range is empty");
+    if (offset + length > input_size) throw std::runtime_error("selected range exceeds input size");
+    if (max_chunks <= 0) throw std::runtime_error("max_chunks must be positive");
+    *h_chunk_count = 0;
+
+    const char* mode = mode_c ? mode_c : "";
+    const char* preprocessors = preprocessors_c ? preprocessors_c : "";
+    const char* components = components_c ? components_c : "";
+    (void)verifiers_c;
+
+    std::map<std::string, byte> prepro_name2num = getPreproMap();
+    std::map<std::string, byte> comp_name2num = getCompMap();
+
+    int stages = 0;
+    unsigned long long algorithms = 0;
+    bool explicit_list_mode = false;
+    std::vector<unsigned long long> chains;
+    std::vector<std::vector<byte>> comp_list;
+    std::vector<std::pair<byte, std::vector<double>>> prepros;
+
+    std::vector<char> prepro_buf(preprocessors, preprocessors + strlen(preprocessors) + 1);
+    std::vector<char> comp_buf(components, components + strlen(components) + 1);
+
+    if (strcmp(mode, "CR") == 0) {
+      prepros = getItems(prepro_name2num, prepro_buf.data());
+      comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
+    } else if (strcmp(mode, "CRL") == 0) {
+      prepros = getItems(prepro_name2num, prepro_buf.data());
+      chains = getChains(comp_name2num, comp_buf.data(), stages, algorithms);
+      explicit_list_mode = true;
+    } else {
+      throw std::runtime_error("lc_run_device_memory_block_best supports CR and CRL modes");
+    }
+    if (algorithms < 1) throw std::runtime_error("need at least one algorithm");
+
+    if (explicit_list_mode) {
+      printChains(prepros, prepro_name2num, chains, stages);
+    } else {
+      printStages(prepros, prepro_name2num, comp_list, comp_name2num, stages, algorithms);
+    }
+
+    cudaSetDevice(0);
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, 0);
+    const int blocks = deviceProp.multiProcessorCount * (deviceProp.maxThreadsPerMultiProcessor / TPB);
+    CheckCuda(__LINE__);
+
+    const byte* d_input = d_input_base + offset;
+    byte* d_preencdata = NULL;
+    cudaMalloc((void **)&d_preencdata, length);
+    cudaMemcpy(d_preencdata, d_input, length, cudaMemcpyDeviceToDevice);
+    long long dpreencsize = length;
+    d_preprocess_encode(dpreencsize, d_preencdata, prepros);
+    CheckCuda(__LINE__);
+
+    const long long dchunks = (dpreencsize + CS - 1) / CS;
+    if (dchunks <= 0) throw std::runtime_error("selected range has no LC chunks");
+    if (dchunks > max_chunks) throw std::runtime_error("output arrays are smaller than the LC chunk count");
+    if (dchunks > std::numeric_limits<int>::max()) throw std::runtime_error("too many chunks for LC kernels");
+
+    const long long dmaxsize = 2 * sizeof(long long) + dchunks * sizeof(short) + dchunks * CS;
+    byte* d_encoded = NULL;
+    long long* d_encsize = NULL;
+    unsigned short* d_bestSize = NULL;
+    unsigned long long* d_bestPipe = NULL;
+    cudaMalloc((void **)&d_encoded, dmaxsize);
+    cudaMalloc((void **)&d_encsize, sizeof(long long));
+    cudaMalloc((void **)&d_bestSize, sizeof(unsigned short) * dchunks);
+    cudaMalloc((void **)&d_bestPipe, sizeof(unsigned long long) * dchunks);
+    initBestSizeAndPipe<<<1, TPB>>>(d_bestSize, d_bestPipe, (int)dchunks);
+    CheckCuda(__LINE__);
+
+    float bestCR = 100.0;
+    unsigned long long bestPipe = 0;
+    long long bestEncSize = length;
+
+    auto run_chain = [&](const unsigned long long chain) {
+      printf("pipeline: %s\n", getPipeline(chain, stages).c_str());
+      long long* d_fullcarry;
+      cudaMalloc((void **)&d_fullcarry, dchunks * sizeof(long long));
+      d_reset<<<1, 1>>>();
+      cudaMemset(d_fullcarry, 0, dchunks * sizeof(long long));
+      d_encode<<<blocks, TPB>>>(chain, d_preencdata, dpreencsize, d_encoded, d_encsize, d_fullcarry);
+      cudaFree(d_fullcarry);
+      cudaDeviceSynchronize();
+      CheckCuda(__LINE__);
+
+      long long dencsize = 0;
+      cudaMemcpy(&dencsize, d_encsize, sizeof(long long), cudaMemcpyDeviceToHost);
+      dbestChunkSizeAndPipe<<<1, TPB>>>(d_encoded, d_bestSize, d_bestPipe, chain);
+      CheckCuda(__LINE__);
+
+      const float dCR = (100.0 * dencsize) / dpreencsize;
+      printf("compression: %6.2f%% %7.3fx  (%lld bytes)\n", dCR, 100.0 / dCR, dencsize);
+      if (bestCR > dCR) {
+        bestCR = dCR;
+        bestPipe = chain;
+        bestEncSize = dencsize;
+      }
+    };
+
+    if (explicit_list_mode) {
+      for (unsigned long long chain: chains) run_chain(chain);
+    } else {
+      unsigned long long combin = 0;
+      int carrypos;
+      do {
+        unsigned long long chain = 0;
+        for (int s = 0; s < stages; s++) {
+          unsigned long long compnum = comp_list[s][(combin >> (s * 8)) & 0xff];
+          chain |= compnum << (s * 8);
+        }
+        run_chain(chain);
+        carrypos = 0;
+        combin++;
+        while (carrypos < stages) {
+          const unsigned long long idx = (combin >> (carrypos * 8)) & 0xff;
+          if (idx < comp_list[carrypos].size()) break;
+          combin += ((unsigned long long)1 << ((carrypos + 1) * 8)) - ((unsigned long long)idx << (carrypos * 8));
+          carrypos++;
+        }
+      } while (carrypos < stages);
+    }
+
+    cudaMemcpy(h_best_sizes, d_bestSize, sizeof(unsigned short) * dchunks, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_best_pipes, d_bestPipe, sizeof(unsigned long long) * dchunks, cudaMemcpyDeviceToHost);
+    for (long long chunkID = 0; chunkID < dchunks; chunkID++) {
+      const long long remaining = dpreencsize - chunkID * CS;
+      h_chunk_input_bytes[chunkID] = std::min((long long)CS, remaining);
+    }
+    *h_chunk_count = dchunks;
+
+    printf("\nbest compression: %6.2f%% %7.3fx  (%lld bytes)\n", bestCR, 100.0 / bestCR, bestEncSize);
+    printf("best pipeline: %s\n\n", getPipeline(bestPipe, stages).c_str());
+
+    cudaFree(d_bestPipe);
+    cudaFree(d_bestSize);
+    cudaFree(d_encsize);
+    cudaFree(d_encoded);
+    cudaFree(d_preencdata);
+    CheckCuda(__LINE__);
+    return 0;
+  } catch (const std::exception& e) {
+    fprintf(stderr, "ERROR: %s\n\n", e.what());
+    return -1;
+  }
+#endif
+}
+
+
+extern "C" int lc_run_device_memory_block_all(const byte* d_input_base,
+                                              long long input_size,
+                                              long long offset,
+                                              long long length,
+                                              const char* mode_c,
+                                              const char* preprocessors_c,
+                                              const char* components_c,
+                                              const char* verifiers_c,
+                                              unsigned short* h_best_sizes,
+                                              unsigned long long* h_best_pipes,
+                                              long long* h_chunk_input_bytes,
+                                              long long max_chunks,
+                                              long long* h_chunk_count,
+                                              unsigned short* h_pipeline_chunk_sizes,
+                                              unsigned long long* h_pipeline_pipes,
+                                              long long max_pipelines,
+                                              long long* h_pipeline_count)
+{
+#ifndef USE_GPU
+  fprintf(stderr, "ERROR: lc_run_device_memory_block_all requires USE_GPU\n\n");
+  return -1;
+#else
+  try {
+    if (d_input_base == NULL) throw std::runtime_error("input device pointer is null");
+    if (h_best_sizes == NULL) throw std::runtime_error("h_best_sizes is null");
+    if (h_best_pipes == NULL) throw std::runtime_error("h_best_pipes is null");
+    if (h_chunk_input_bytes == NULL) throw std::runtime_error("h_chunk_input_bytes is null");
+    if (h_chunk_count == NULL) throw std::runtime_error("h_chunk_count is null");
+    if (h_pipeline_chunk_sizes == NULL) throw std::runtime_error("h_pipeline_chunk_sizes is null");
+    if (h_pipeline_pipes == NULL) throw std::runtime_error("h_pipeline_pipes is null");
+    if (h_pipeline_count == NULL) throw std::runtime_error("h_pipeline_count is null");
+    if (input_size <= 0) throw std::runtime_error("input size must be positive");
+    if (offset < 0) throw std::runtime_error("offset must be non-negative");
+    if (length < 0) throw std::runtime_error("length must be non-negative");
+    if (offset > input_size) throw std::runtime_error("offset exceeds input size");
+    if (length == 0) length = input_size - offset;
+    if (length <= 0) throw std::runtime_error("selected range is empty");
+    if (offset + length > input_size) throw std::runtime_error("selected range exceeds input size");
+    if (max_chunks <= 0) throw std::runtime_error("max_chunks must be positive");
+    if (max_pipelines <= 0) throw std::runtime_error("max_pipelines must be positive");
+    *h_chunk_count = 0;
+    *h_pipeline_count = 0;
+
+    const char* mode = mode_c ? mode_c : "";
+    const char* preprocessors = preprocessors_c ? preprocessors_c : "";
+    const char* components = components_c ? components_c : "";
+    (void)verifiers_c;
+
+    std::map<std::string, byte> prepro_name2num = getPreproMap();
+    std::map<std::string, byte> comp_name2num = getCompMap();
+
+    int stages = 0;
+    unsigned long long algorithms = 0;
+    bool explicit_list_mode = false;
+    std::vector<unsigned long long> chains;
+    std::vector<std::vector<byte>> comp_list;
+    std::vector<std::pair<byte, std::vector<double>>> prepros;
+
+    std::vector<char> prepro_buf(preprocessors, preprocessors + strlen(preprocessors) + 1);
+    std::vector<char> comp_buf(components, components + strlen(components) + 1);
+
+    if (strcmp(mode, "CR") == 0) {
+      prepros = getItems(prepro_name2num, prepro_buf.data());
+      comp_list = getStages(comp_name2num, comp_buf.data(), stages, algorithms);
+    } else if (strcmp(mode, "CRL") == 0) {
+      prepros = getItems(prepro_name2num, prepro_buf.data());
+      chains = getChains(comp_name2num, comp_buf.data(), stages, algorithms);
+      explicit_list_mode = true;
+    } else {
+      throw std::runtime_error("lc_run_device_memory_block_all supports CR and CRL modes");
+    }
+    if (algorithms < 1) throw std::runtime_error("need at least one algorithm");
+    if (algorithms > (unsigned long long)max_pipelines) {
+      throw std::runtime_error("output arrays are smaller than the LC pipeline count");
+    }
+
+    if (explicit_list_mode) {
+      printChains(prepros, prepro_name2num, chains, stages);
+    } else {
+      printStages(prepros, prepro_name2num, comp_list, comp_name2num, stages, algorithms);
+    }
+
+    cudaSetDevice(0);
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, 0);
+    const int blocks = deviceProp.multiProcessorCount * (deviceProp.maxThreadsPerMultiProcessor / TPB);
+    CheckCuda(__LINE__);
+
+    const byte* d_input = d_input_base + offset;
+    byte* d_preencdata = NULL;
+    cudaMalloc((void **)&d_preencdata, length);
+    cudaMemcpy(d_preencdata, d_input, length, cudaMemcpyDeviceToDevice);
+    long long dpreencsize = length;
+    d_preprocess_encode(dpreencsize, d_preencdata, prepros);
+    CheckCuda(__LINE__);
+
+    const long long dchunks = (dpreencsize + CS - 1) / CS;
+    if (dchunks <= 0) throw std::runtime_error("selected range has no LC chunks");
+    if (dchunks > max_chunks) throw std::runtime_error("output arrays are smaller than the LC chunk count");
+    if (dchunks > std::numeric_limits<int>::max()) throw std::runtime_error("too many chunks for LC kernels");
+
+    const long long dmaxsize = 2 * sizeof(long long) + dchunks * sizeof(short) + dchunks * CS;
+    byte* d_encoded = NULL;
+    long long* d_encsize = NULL;
+    unsigned short* d_bestSize = NULL;
+    unsigned long long* d_bestPipe = NULL;
+    cudaMalloc((void **)&d_encoded, dmaxsize);
+    cudaMalloc((void **)&d_encsize, sizeof(long long));
+    cudaMalloc((void **)&d_bestSize, sizeof(unsigned short) * dchunks);
+    cudaMalloc((void **)&d_bestPipe, sizeof(unsigned long long) * dchunks);
+    initBestSizeAndPipe<<<1, TPB>>>(d_bestSize, d_bestPipe, (int)dchunks);
+    CheckCuda(__LINE__);
+
+    float bestCR = 100.0;
+    unsigned long long bestPipe = 0;
+    long long bestEncSize = length;
+    long long pipeline_index = 0;
+
+    auto run_chain = [&](const unsigned long long chain) {
+      printf("pipeline: %s\n", getPipeline(chain, stages).c_str());
+      long long* d_fullcarry;
+      cudaMalloc((void **)&d_fullcarry, dchunks * sizeof(long long));
+      d_reset<<<1, 1>>>();
+      cudaMemset(d_fullcarry, 0, dchunks * sizeof(long long));
+      d_encode<<<blocks, TPB>>>(chain, d_preencdata, dpreencsize, d_encoded, d_encsize, d_fullcarry);
+      cudaFree(d_fullcarry);
+      cudaDeviceSynchronize();
+      CheckCuda(__LINE__);
+
+      long long dencsize = 0;
+      cudaMemcpy(&dencsize, d_encsize, sizeof(long long), cudaMemcpyDeviceToHost);
+      long long* const d_head = (long long*)d_encoded;
+      unsigned short* const d_size_in = (unsigned short*)&d_head[1];
+      cudaMemcpy(
+          h_pipeline_chunk_sizes + pipeline_index * max_chunks,
+          d_size_in,
+          sizeof(unsigned short) * dchunks,
+          cudaMemcpyDeviceToHost);
+      h_pipeline_pipes[pipeline_index] = chain;
+      dbestChunkSizeAndPipe<<<1, TPB>>>(d_encoded, d_bestSize, d_bestPipe, chain);
+      CheckCuda(__LINE__);
+
+      const float dCR = (100.0 * dencsize) / dpreencsize;
+      printf("compression: %6.2f%% %7.3fx  (%lld bytes)\n", dCR, 100.0 / dCR, dencsize);
+      if (bestCR > dCR) {
+        bestCR = dCR;
+        bestPipe = chain;
+        bestEncSize = dencsize;
+      }
+      pipeline_index++;
+    };
+
+    if (explicit_list_mode) {
+      for (unsigned long long chain: chains) run_chain(chain);
+    } else {
+      unsigned long long combin = 0;
+      int carrypos;
+      do {
+        unsigned long long chain = 0;
+        for (int s = 0; s < stages; s++) {
+          unsigned long long compnum = comp_list[s][(combin >> (s * 8)) & 0xff];
+          chain |= compnum << (s * 8);
+        }
+        run_chain(chain);
+        carrypos = 0;
+        combin++;
+        while (carrypos < stages) {
+          const unsigned long long idx = (combin >> (carrypos * 8)) & 0xff;
+          if (idx < comp_list[carrypos].size()) break;
+          combin += ((unsigned long long)1 << ((carrypos + 1) * 8)) - ((unsigned long long)idx << (carrypos * 8));
+          carrypos++;
+        }
+      } while (carrypos < stages);
+    }
+
+    cudaMemcpy(h_best_sizes, d_bestSize, sizeof(unsigned short) * dchunks, cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_best_pipes, d_bestPipe, sizeof(unsigned long long) * dchunks, cudaMemcpyDeviceToHost);
+    for (long long chunkID = 0; chunkID < dchunks; chunkID++) {
+      const long long remaining = dpreencsize - chunkID * CS;
+      h_chunk_input_bytes[chunkID] = std::min((long long)CS, remaining);
+    }
+    *h_chunk_count = dchunks;
+    *h_pipeline_count = pipeline_index;
+
+    printf("\nbest compression: %6.2f%% %7.3fx  (%lld bytes)\n", bestCR, 100.0 / bestCR, bestEncSize);
+    printf("best pipeline: %s\n\n", getPipeline(bestPipe, stages).c_str());
+
+    cudaFree(d_bestPipe);
+    cudaFree(d_bestSize);
+    cudaFree(d_encsize);
+    cudaFree(d_encoded);
+    cudaFree(d_preencdata);
+    CheckCuda(__LINE__);
+    return 0;
+  } catch (const std::exception& e) {
+    fprintf(stderr, "ERROR: %s\n\n", e.what());
+    return -1;
+  }
+#endif
+}
+
+
 int main(int argc, char* argv [])
 {
   printf("LC Compression Framework v1.2 (%s)\n", __FILE__);

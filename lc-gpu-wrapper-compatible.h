@@ -257,14 +257,44 @@ static void __global__ initBestSize(unsigned short* const bestSize, const int ch
 }
 
 
+static void __global__ initBestSizeAndPipe(unsigned short* const bestSize, unsigned long long* const bestPipe, const int chunks)
+{
+  if ((threadIdx.x == 0) && (WS != warpSize)) {printf("ERROR: WS must be %d\n\n", warpSize); __trap();}  // debugging only
+  for (int i = threadIdx.x; i < chunks; i += TPB) {
+    bestSize[i] = CS;
+    bestPipe[i] = 0;
+  }
+}
+
+
 static void __global__ dbestChunkSize(const byte* const __restrict__ input, unsigned short* const __restrict__ bestSize)
 {
-  int* const head_in = (int*)input;
-  const int outsize = head_in[0];
+  long long* const head_in = (long long*)input;
+  const long long outsize = head_in[0];
   const int chunks = (outsize + CS - 1) / CS;  // round up
   unsigned short* const size_in = (unsigned short*)&head_in[1];
   for (int chunkID = threadIdx.x; chunkID < chunks; chunkID += TPB) {
     bestSize[chunkID] = min(bestSize[chunkID], size_in[chunkID]);
+  }
+}
+
+
+static void __global__ dbestChunkSizeAndPipe(
+    const byte* const __restrict__ input,
+    unsigned short* const __restrict__ bestSize,
+    unsigned long long* const __restrict__ bestPipe,
+    const unsigned long long chain)
+{
+  long long* const head_in = (long long*)input;
+  const long long outsize = head_in[0];
+  const int chunks = (outsize + CS - 1) / CS;  // round up
+  unsigned short* const size_in = (unsigned short*)&head_in[1];
+  for (int chunkID = threadIdx.x; chunkID < chunks; chunkID += TPB) {
+    const unsigned short candidate = size_in[chunkID];
+    if ((candidate < bestSize[chunkID]) || (bestPipe[chunkID] == 0)) {
+      bestSize[chunkID] = candidate;
+      bestPipe[chunkID] = chain;
+    }
   }
 }
 
