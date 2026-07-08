@@ -42,6 +42,7 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 
 
 #include "h_zero_elimination.h"
+#include "bitmap_pyramid.h"
 
 
 template <typename T>
@@ -50,13 +51,13 @@ static inline bool h_RZE(int& csize, byte in [CS], byte out [CS])
   const int size = csize / sizeof(T);  // words in chunk (rounded down)
   const int extra = csize % sizeof(T);
   const int bits = 8 * sizeof(T);
-  const int num = (2048 + 256 + 32 + 4) / sizeof(T);
-  assert(CS == 16384);
+  constexpr int BitmapRange = lc_detail::BitmapPyramid<T>::first_range;
+  constexpr int num = lc_detail::BitmapPyramid<T>::bytes;
 
   // zero out end of bitmap
   byte bitmap [num];
   if (csize < CS) {
-    memset(&bitmap[csize / bits], 0, CS / bits - csize / bits);
+    memset(&bitmap[csize / bits], 0, BitmapRange - csize / bits);
   }
 
   // copy non-zero values and generate bitmap
@@ -68,10 +69,10 @@ static inline bool h_RZE(int& csize, byte in [CS], byte out [CS])
   // check if not all zeros
   if (wpos != 0) {
     int base = 0;
-    int range = CS / bits;
+    int range = BitmapRange;
 
     // iteratively compress bitmap
-    while (range >= 8) {  // 2048 256 32 / sizeof(T)
+    while (range >= 8) {
       byte prev = 0;
       for (int i = 0; i < range; i += 8) {
         const long long lval = *((long long*)(&bitmap[base + i]));
@@ -92,7 +93,7 @@ static inline bool h_RZE(int& csize, byte in [CS], byte out [CS])
 
     // output last level of bitmap
     if (wpos >= CS - 2 - extra - range) return false;
-    for (int i = 0; i < range; i++) {  // 4 / sizeof(T)
+    for (int i = 0; i < range; i++) {
       out[wpos++] = bitmap[base + i];
     }
   }
@@ -120,8 +121,8 @@ static inline void h_iRZE(int& csize, byte in [CS], byte out [CS])
   csize |= in[--rpos];  // bottom byte
   const int size = csize / sizeof(T);  // words in chunk (rounded down)
   const int bits = 8 * sizeof(T);
-  const int num = (2048 + 256 + 32 + 4) / sizeof(T);
-  assert(CS == 16384);
+  constexpr int BitmapRange = lc_detail::BitmapPyramid<T>::first_range;
+  constexpr int num = lc_detail::BitmapPyramid<T>::bytes;
 
   // copy leftover byte
   if constexpr (sizeof(T) > 1) {
@@ -137,8 +138,8 @@ static inline void h_iRZE(int& csize, byte in [CS], byte out [CS])
     memset(out, 0, size * sizeof(T));
   } else {
     int base = 0;
-    int range = CS / bits;
-    while (range >= 8) {  // 2048 256 32 / sizeof(T)
+    int range = BitmapRange;
+    while (range >= 8) {
       base += range;
       range /= 8;
     }
@@ -146,12 +147,12 @@ static inline void h_iRZE(int& csize, byte in [CS], byte out [CS])
     // read in last level of bitmap
     byte bitmap [num];
     rpos -= range;
-    for (int i = 0; i < range; i++) {  // 4 / sizeof(T)
+    for (int i = 0; i < range; i++) {
       bitmap[base + i] = in[rpos + i];
     }
 
     // iteratively decompress bitmap
-    while (range < CS / bits) {  // 32 256 2048 / sizeof(T)
+    while (range < BitmapRange) {
       range *= 8;
       base -= range;
 

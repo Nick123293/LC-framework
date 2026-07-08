@@ -43,6 +43,7 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 
 #include "d_zero_elimination.h"
 #include "d_repetition_elimination.h"
+#include "bitmap_pyramid.h"
 
 
 template <typename T>
@@ -52,7 +53,9 @@ static __device__ inline bool d_RARE(int& csize, byte in [CS], byte out [CS], by
   const int size = csize / sizeof(T);  // words in chunk (rounded down)
   const int extra = csize % sizeof(T);
   const int bits = 8 * sizeof(T);
-  assert(CS == 16384);
+  constexpr int BitmapRange = lc_detail::BitmapPyramid<T>::first_range;
+  constexpr int LastOffset = lc_detail::BitmapPyramid<T>::last_offset;
+  constexpr int LastRange = lc_detail::BitmapPyramid<T>::last_range;
   T* const in_t = (T*)in;  // T cast
   T* const out_t = (T*)out;
 
@@ -260,6 +263,7 @@ static __device__ inline bool d_RARE(int& csize, byte in [CS], byte out [CS], by
   // encode values and generate bitmap
   T oval = 0;
   byte bmp = 0;
+  bool has_bottom_bits = false;
   prev = ((tid * ept == 0) || (tid * ept >= size)) ? 0 : (in_t[tid * ept - 1] & tmask);
   for (int i = tid * ept; i < min((tid + 1) * ept, size); i++) {
     const T val = in_t[i];
@@ -270,6 +274,7 @@ static __device__ inline bool d_RARE(int& csize, byte in [CS], byte out [CS], by
     } else {
       if (keep != 0) {
         // output bottom bits only
+        has_bottom_bits = true;
         const T bval = val & bmask;
         const int shift = wloc2 % bits;
         const int bms = bits - shift;
@@ -291,13 +296,13 @@ static __device__ inline bool d_RARE(int& csize, byte in [CS], byte out [CS], by
   }
 
   // zero out rest of bitmap
-  for (int i = tid + (size + 7) / 8; i < CS / bits; i += TPB) {
+  for (int i = tid + (size + 7) / 8; i < BitmapRange; i += TPB) {
     bitmap[i] = 0;
   }
   __syncthreads();
 
   // output last partial word
-  if ((wloc2 % bits) != 0) {
+  if (has_bottom_bits && ((wloc2 % bits) != 0)) {
     if constexpr (bits == 8) {
       atomicOr_block((int*)&out_t[wpos2 & ~3], (int)oval << (8 * (wpos2 & 3)));
     } else if constexpr (bits == 16) {
@@ -312,37 +317,14 @@ static __device__ inline bool d_RARE(int& csize, byte in [CS], byte out [CS], by
   // iteratively compress bitmaps
   const int avail = CS - 3 - extra;
   int wpos = (bits * (size - countk) + keep * countk + 7) / 8;
-  int base = 0 / sizeof(T);
-  int range = 2048 / sizeof(T);
-  cnt = avail - wpos;
-  if (!d_REencode<byte, 2048 / sizeof(T), true>(&bitmap[base], range, &out[wpos], cnt, &bitmap[base + range], (int*)temp)) return false;
-  wpos += cnt;
-  __syncthreads();
-
-  base = 2048 / sizeof(T);
-  range = 256 / sizeof(T);
-  cnt = avail - wpos;
-  if (!d_REencode<byte, 256 / sizeof(T), true>(&bitmap[base], range, &out[wpos], cnt, &bitmap[base + range], (int*)temp)) return false;
-  wpos += cnt;
-  __syncthreads();
-
-  base = (2048 + 256) / sizeof(T);
-  range = 32 / sizeof(T);
-  if constexpr (sizeof(T) < 8) {
-    cnt = avail - wpos;
-    if (!d_REencode<byte, 32 / sizeof(T), true>(&bitmap[base], range, &out[wpos], cnt, &bitmap[base + range], (int*)temp)) return false;
-    wpos += cnt;
-
-    base = (2048 + 256 + 32) / sizeof(T);
-    range = 4 / sizeof(T);
-  }
+  if (!lc_detail::d_encode_re_bitmap_pyramid<0, BitmapRange>(bitmap, out, wpos, avail, (int*)temp)) return false;
 
   // output last level of bitmap
-  if (wpos >= avail - range) return false;
-  if (tid < range) {  // 4 / sizeof(T)
-    out[wpos + tid] = bitmap[base + tid];
+  if (wpos >= avail - LastRange) return false;
+  if (tid < LastRange) {
+    out[wpos + tid] = bitmap[LastOffset + tid];
   }
-  wpos += range;
+  wpos += LastRange;
 
   // copy leftover bytes
   if constexpr (sizeof(T) > 1) {
@@ -397,58 +379,18 @@ static __device__ inline void d_iRARE(int& csize, byte in [CS], byte out [CS], b
       out_t[i] = in_t[i];
     }
   } else {  // keep some bits from each value (0 <= keep < bits)
-    assert(CS == 16384);
+    constexpr int BitmapRange = lc_detail::BitmapPyramid<T>::first_range;
+    constexpr int LastOffset = lc_detail::BitmapPyramid<T>::last_offset;
+    constexpr int LastRange = lc_detail::BitmapPyramid<T>::last_range;
     int rpos = csize - 3 - extra;
     int* const temp_w = (int*)temp;
     byte* const bitmap = (byte*)&temp_w[WS];
 
     // iteratively decompress bitmaps
-    int base, range;
-    if constexpr (sizeof(T) == 8) {
-      base = (2048 + 256) / sizeof(T);
-      range = 32 / sizeof(T);
-      // read in last level of bitmap
-      rpos -= range;
-      if (tid < range) bitmap[base + tid] = in[rpos + tid];
-    } else {
-      base = (2048 + 256 + 32) / sizeof(T);
-      range = 4 / sizeof(T);
-      // read in last level of bitmap
-      rpos -= range;
-      if (tid < range) bitmap[base + tid] = in[rpos + tid];
-
-      rpos -= __syncthreads_count((tid < range * 8) && ((in[rpos + tid / 8] >> (tid % 8)) & 1));
-      base = (2048 + 256) / sizeof(T);
-      range = 32 / sizeof(T);
-      d_REdecode<byte, 32 / sizeof(T)>(range, &in[rpos], &bitmap[base + range], &bitmap[base], temp_w);
-    }
+    rpos -= LastRange;
+    if (tid < LastRange) bitmap[LastOffset + tid] = in[rpos + tid];
     __syncthreads();
-
-    rpos -= __syncthreads_count((tid < range * 8) && ((bitmap[base + tid / 8] >> (tid % 8)) & 1));
-    base = 2048 / sizeof(T);
-    range = 256 / sizeof(T);
-    d_REdecode<byte, 256 / sizeof(T)>(range, &in[rpos], &bitmap[base + range], &bitmap[base], temp_w);
-    __syncthreads();
-
-    if constexpr (sizeof(T) >= 4) {
-      rpos -= __syncthreads_count((tid < range * 8) && ((bitmap[base + tid / 8] >> (tid % 8)) & 1));
-    }
-    if constexpr (sizeof(T) == 2) {
-      int sum = __syncthreads_count((tid < range * 8) && ((bitmap[base + tid / 8] >> (tid % 8)) & 1));
-      sum += __syncthreads_count((tid + TPB < range * 8) && ((bitmap[base + (tid + TPB) / 8] >> (tid % 8)) & 1));
-      rpos -= sum;
-    }
-    if constexpr (sizeof(T) == 1) {
-      int sum = 0;
-      for (int i = 0; i < TPB * 4; i += TPB) {
-        sum += __syncthreads_count((tid + i < range * 8) && ((bitmap[base + (tid + i) / 8] >> (tid % 8)) & 1));
-      }
-      rpos -= sum;
-    }
-    base = 0 / sizeof(T);
-    range = 2048 / sizeof(T);
-    d_REdecode<byte, 2048 / sizeof(T)>(range, &in[rpos], &bitmap[base + range], &bitmap[base], temp_w);
-    __syncthreads();
+    lc_detail::d_decode_re_bitmap_pyramid<BitmapRange, LastOffset, LastRange>(bitmap, in, rpos, temp_w);
 
     // determine rpos1 etc.
     const int ept = (((size + TPB - 1) / TPB + 7) / 8) * 8;  // elements per thread (multiple of 8)

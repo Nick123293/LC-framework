@@ -41,6 +41,12 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 
 
 #include "lc-gpu-wrapper-compatible.h"
+
+extern "C" int lc_chunk_size_bytes()
+{
+  return CS;
+}
+
 /*Using extern "C" allows us to have a non-mangled function symbol for use in python shared library linking
 i.e. this is why we can call lib.lc_run_device_memory in lc_bindings.py*/
 extern "C" int lc_run_device_memory(const byte* d_input_base,

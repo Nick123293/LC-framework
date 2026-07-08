@@ -19,3 +19,5 @@ decompressor-standalone.cu
 *.f32
 *.exe
 *.exe.*
+*.so
+lc_*

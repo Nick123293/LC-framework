@@ -133,7 +133,14 @@ gpucomps = [c for c in gpucomps if c[2:] in cname]
 
 # update constants
 with open(args.output_dir + '/include/consts.h', 'w') as f:
-  f.write("static const int CS = 1024 * 16;  // chunk size (in bytes) [do not change]\n")
+  f.write("#ifndef LC_CHUNK_SIZE\n")
+  f.write("#define LC_CHUNK_SIZE (1024 * 16)\n")
+  f.write("#endif\n\n")
+  f.write("static constexpr int CS = LC_CHUNK_SIZE;  // chunk size (in bytes)\n")
+  f.write("static_assert(CS > 0, \"LC_CHUNK_SIZE must be positive\");\n")
+  f.write("static_assert(CS < 65536, \"LC_CHUNK_SIZE must fit in unsigned short chunk-size fields\");\n")
+  f.write("static_assert((CS & (CS - 1)) == 0, \"LC_CHUNK_SIZE must be a power of two\");\n")
+  f.write("static_assert(CS >= 1024, \"LC_CHUNK_SIZE must be at least 1024 bytes\");\n")
   f.write("static const int TPB = 512;  // threads per block [must be power of 2 and at least 128]\n")
   f.write("#if defined(__AMDGCN_WAVEFRONT_SIZE) && (__AMDGCN_WAVEFRONT_SIZE == 64)\n")
   f.write("#define WS 64\n")

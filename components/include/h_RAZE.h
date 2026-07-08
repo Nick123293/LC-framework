@@ -41,6 +41,9 @@ Sponsor: This code is based upon work supported by the U.S. Department of Energy
 #define CPU_RAZE
 
 
+#include "bitmap_pyramid.h"
+
+
 template <typename T>
 static inline bool h_RAZE(int& csize, byte in [CS], byte out [CS])
 {
@@ -110,8 +113,8 @@ static inline bool h_RAZE(int& csize, byte in [CS], byte out [CS])
   // keep some bits from each value (0 <= keep < bits)
 
   // create bitmap
-  assert(CS == 16384);
-  const int num = (2048 + 256 + 32 + 4) / sizeof(T);
+  constexpr int BitmapRange = lc_detail::BitmapPyramid<T>::first_range;
+  constexpr int num = lc_detail::BitmapPyramid<T>::bytes;
   byte bitmap [num];
 
   // initialize
@@ -156,15 +159,15 @@ static inline bool h_RAZE(int& csize, byte in [CS], byte out [CS])
   }
 
   // zero out rest of bitmap
-  for (int i = (size + 7) / 8; i < CS / bits; i++) {
+  for (int i = (size + 7) / 8; i < BitmapRange; i++) {
     bitmap[i] = 0;
   }
 
   // iteratively compress bitmap
   int wpos = (wloc2 + 7) / 8;
   int base = 0;
-  int range = CS / bits;
-  while (range >= 8) {  // 2048 256 32 / sizeof(T)
+  int range = BitmapRange;
+  while (range >= 8) {
     byte prev = 0;
     for (int i = 0; i < range; i += 8) {
       const long long lval = *((long long*)(&bitmap[base + i]));
@@ -236,15 +239,15 @@ static inline void h_iRAZE(int& csize, byte in [CS], byte out [CS])
     memcpy(out, in, oldsize - extra);
   } else {  // keep some bits from each value (0 <= keep < bits)
     int base = 0;
-    int range = CS / bits;
+    constexpr int BitmapRange = lc_detail::BitmapPyramid<T>::first_range;
+    int range = BitmapRange;
     while (range >= 8) {
       base += range;
       range /= 8;
     }
 
     // read in last level of bitmap
-    assert(CS == 16384);
-    const int num = (2048 + 256 + 32 + 4) / sizeof(T);
+    constexpr int num = lc_detail::BitmapPyramid<T>::bytes;
     byte bitmap [num];
     int count = 0;
     int rpos = csize - 3 - extra - range;
@@ -255,7 +258,7 @@ static inline void h_iRAZE(int& csize, byte in [CS], byte out [CS])
     }
 
     // iteratively decompress bitmap
-    while (range < CS / bits) {
+    while (range < BitmapRange) {
       range *= 8;
       base -= range;
       rpos -= count;
