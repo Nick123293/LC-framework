@@ -61,7 +61,6 @@ static const int max_stages = 8;  // cannot be more than 8
 #include <regex>
 #include <stdexcept>
 #include <sys/time.h>
-#include <sstream>
 
 
 #if defined(_OPENMP)
@@ -257,44 +256,14 @@ static void __global__ initBestSize(unsigned short* const bestSize, const int ch
 }
 
 
-static void __global__ initBestSizeAndPipe(unsigned short* const bestSize, unsigned long long* const bestPipe, const int chunks)
-{
-  if ((threadIdx.x == 0) && (WS != warpSize)) {printf("ERROR: WS must be %d\n\n", warpSize); __trap();}  // debugging only
-  for (int i = threadIdx.x; i < chunks; i += TPB) {
-    bestSize[i] = CS;
-    bestPipe[i] = 0;
-  }
-}
-
-
 static void __global__ dbestChunkSize(const byte* const __restrict__ input, unsigned short* const __restrict__ bestSize)
 {
-  long long* const head_in = (long long*)input;
-  const long long outsize = head_in[0];
+  int* const head_in = (int*)input;
+  const int outsize = head_in[0];
   const int chunks = (outsize + CS - 1) / CS;  // round up
   unsigned short* const size_in = (unsigned short*)&head_in[1];
   for (int chunkID = threadIdx.x; chunkID < chunks; chunkID += TPB) {
     bestSize[chunkID] = min(bestSize[chunkID], size_in[chunkID]);
-  }
-}
-
-
-static void __global__ dbestChunkSizeAndPipe(
-    const byte* const __restrict__ input,
-    unsigned short* const __restrict__ bestSize,
-    unsigned long long* const __restrict__ bestPipe,
-    const unsigned long long chain)
-{
-  long long* const head_in = (long long*)input;
-  const long long outsize = head_in[0];
-  const int chunks = (outsize + CS - 1) / CS;  // round up
-  unsigned short* const size_in = (unsigned short*)&head_in[1];
-  for (int chunkID = threadIdx.x; chunkID < chunks; chunkID += TPB) {
-    const unsigned short candidate = size_in[chunkID];
-    if ((candidate < bestSize[chunkID]) || (bestPipe[chunkID] == 0)) {
-      bestSize[chunkID] = candidate;
-      bestPipe[chunkID] = chain;
-    }
   }
 }
 
@@ -454,6 +423,158 @@ static inline __device__ void g2s(void* const __restrict__ destination, const vo
       }
     }
   }
+}
+
+static __device__ __forceinline__ void d_insert_chunk_topk(const long long chunk_id, const unsigned short candidate_size, const unsigned long long candidate_chain,
+const unsigned int topk, unsigned short* const __restrict__ chunk_topks, unsigned long long* const __restrict__ chain_ids)
+{
+  const size_t base = static_cast<size_t>(chunk_id) * static_cast<size_t>(topk);
+  int insertion_rank=topk;
+  for(int rank=0; rank<topk; ++rank){
+    const unsigned short existing_size=chunk_topks[base+rank];
+    const unsigned long long existing_chain=chain_ids[base+rank];
+    if(candidate_size < existing_size || candidate_size==existing_size && candidate_chain < existing_chain)
+    { //insert pipeline if it has smaller size or same size with less pipelines
+      insertion_rank=rank;
+      break;
+    }
+  }
+  if (insertion_rank==topk){ //result is not in topk, don't add it
+    return;
+  }
+  for(int rank=topk-1; rank>insertion_rank; --rank){ //Move the entries below what we just inserted down one
+    chunk_topks[base+rank]=chunk_topks[base+rank-1];
+    chain_ids[base+rank]=chain_ids[base+rank-1];
+  }
+  chunk_topks[base + insertion_rank] = candidate_size; //Insert our new compressed_bytes value and chain_id
+  chain_ids[base + insertion_rank] = candidate_chain;
+
+}
+
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 800)
+static __global__ __launch_bounds__(TPB, 3)
+#else
+static __global__ __launch_bounds__(TPB, 2)
+#endif
+void d_get_chunk_topk_best_CR(const unsigned long long chain, const byte* const __restrict__ input, const unsigned long long insize, const unsigned int topk, unsigned short* d_chunk_topks, unsigned long long* d_chain_ids)
+{
+  __shared__ long long chunk [3 * (CS / sizeof(long long))];
+  // split into 3 shared memory buffers
+  byte* in = (byte*)&chunk[0 * (CS / sizeof(long long))];
+  byte* out = (byte*)&chunk[1 * (CS / sizeof(long long))];
+  byte* const temp = (byte*)&chunk[2 * (CS / sizeof(long long))];
+  const int last = 3*(CS/sizeof(long long))-2-WS;
+  const int tid = threadIdx.x;
+  do{
+    if (tid==0) chunk[last] = atomicAdd(&g_chunk_counter, 1ULL);
+    __syncthreads();
+    const long long chunk_id=chunk[last];
+    const unsigned long long base = chunk_id*CS;
+    if (base>=insize) break; //terminate if done
+    //original size may not be CS on the final chunk
+    const int osize = static_cast<int>(min(static_cast<unsigned long long>(CS), insize - base));
+    const long long* const input_l = reinterpret_cast<const long long*>(&input[base]);
+    long long* const out_l = reinterpret_cast<long long*>(out);
+    for(int i=tid; i<osize/8; i+=TPB){
+      out_l[i]=input_l[i];
+    }
+    const int extra=osize%8;
+    if(tid<extra){
+      out[static_cast<long long>(osize-extra+tid)]=input[base+static_cast<long long>(osize-extra+tid)];
+    }
+    int csize=osize;
+    bool good=true;
+    unsigned long long pipeline=chain;
+    while (pipeline!=0 && good){
+      __syncthreads();
+      byte* swap = in; in = out; out = swap;
+      switch (pipeline & 0xff){
+        default: {byte* swap=in; in=out; out=swap;} break; //NUL transform
+        /*##switch-device-encode-beg##*/
+        case BIT_1: good = d_BIT_1(csize, in, out, temp); break;
+        case BIT_2: good = d_BIT_2(csize, in, out, temp); break;
+        case BIT_4: good = d_BIT_4(csize, in, out, temp); break;
+        case BIT_8: good = d_BIT_8(csize, in, out, temp); break;
+        case CLOG_1: good = d_CLOG_1(csize, in, out, temp); break;
+        case CLOG_2: good = d_CLOG_2(csize, in, out, temp); break;
+        case CLOG_4: good = d_CLOG_4(csize, in, out, temp); break;
+        case CLOG_8: good = d_CLOG_8(csize, in, out, temp); break;
+        case DBEFS_4: good = d_DBEFS_4(csize, in, out, temp); break;
+        case DBEFS_8: good = d_DBEFS_8(csize, in, out, temp); break;
+        case DBESF_4: good = d_DBESF_4(csize, in, out, temp); break;
+        case DBESF_8: good = d_DBESF_8(csize, in, out, temp); break;
+        case DIFFMS_1: good = d_DIFFMS_1(csize, in, out, temp); break;
+        case DIFFMS_2: good = d_DIFFMS_2(csize, in, out, temp); break;
+        case DIFFMS_4: good = d_DIFFMS_4(csize, in, out, temp); break;
+        case DIFFMS_8: good = d_DIFFMS_8(csize, in, out, temp); break;
+        case DIFFNB_1: good = d_DIFFNB_1(csize, in, out, temp); break;
+        case DIFFNB_2: good = d_DIFFNB_2(csize, in, out, temp); break;
+        case DIFFNB_4: good = d_DIFFNB_4(csize, in, out, temp); break;
+        case DIFFNB_8: good = d_DIFFNB_8(csize, in, out, temp); break;
+        case DIFF_1: good = d_DIFF_1(csize, in, out, temp); break;
+        case DIFF_2: good = d_DIFF_2(csize, in, out, temp); break;
+        case DIFF_4: good = d_DIFF_4(csize, in, out, temp); break;
+        case DIFF_8: good = d_DIFF_8(csize, in, out, temp); break;
+        case HCLOG_1: good = d_HCLOG_1(csize, in, out, temp); break;
+        case HCLOG_2: good = d_HCLOG_2(csize, in, out, temp); break;
+        case HCLOG_4: good = d_HCLOG_4(csize, in, out, temp); break;
+        case HCLOG_8: good = d_HCLOG_8(csize, in, out, temp); break;
+        case RARE_1: good = d_RARE_1(csize, in, out, temp); break;
+        case RARE_2: good = d_RARE_2(csize, in, out, temp); break;
+        case RARE_4: good = d_RARE_4(csize, in, out, temp); break;
+        case RARE_8: good = d_RARE_8(csize, in, out, temp); break;
+        case RAZE_1: good = d_RAZE_1(csize, in, out, temp); break;
+        case RAZE_2: good = d_RAZE_2(csize, in, out, temp); break;
+        case RAZE_4: good = d_RAZE_4(csize, in, out, temp); break;
+        case RAZE_8: good = d_RAZE_8(csize, in, out, temp); break;
+        case RLE_1: good = d_RLE_1(csize, in, out, temp); break;
+        case RLE_2: good = d_RLE_2(csize, in, out, temp); break;
+        case RLE_4: good = d_RLE_4(csize, in, out, temp); break;
+        case RLE_8: good = d_RLE_8(csize, in, out, temp); break;
+        case RRE_1: good = d_RRE_1(csize, in, out, temp); break;
+        case RRE_2: good = d_RRE_2(csize, in, out, temp); break;
+        case RRE_4: good = d_RRE_4(csize, in, out, temp); break;
+        case RRE_8: good = d_RRE_8(csize, in, out, temp); break;
+        case RZE_1: good = d_RZE_1(csize, in, out, temp); break;
+        case RZE_2: good = d_RZE_2(csize, in, out, temp); break;
+        case RZE_4: good = d_RZE_4(csize, in, out, temp); break;
+        case RZE_8: good = d_RZE_8(csize, in, out, temp); break;
+        case TCMS_1: good = d_TCMS_1(csize, in, out, temp); break;
+        case TCMS_2: good = d_TCMS_2(csize, in, out, temp); break;
+        case TCMS_4: good = d_TCMS_4(csize, in, out, temp); break;
+        case TCMS_8: good = d_TCMS_8(csize, in, out, temp); break;
+        case TCNB_1: good = d_TCNB_1(csize, in, out, temp); break;
+        case TCNB_2: good = d_TCNB_2(csize, in, out, temp); break;
+        case TCNB_4: good = d_TCNB_4(csize, in, out, temp); break;
+        case TCNB_8: good = d_TCNB_8(csize, in, out, temp); break;
+        case TUPL12_1: good = d_TUPL12_1(csize, in, out, temp); break;
+        case TUPL2_1: good = d_TUPL2_1(csize, in, out, temp); break;
+        case TUPL2_2: good = d_TUPL2_2(csize, in, out, temp); break;
+        case TUPL2_4: good = d_TUPL2_4(csize, in, out, temp); break;
+        case TUPL3_1: good = d_TUPL3_1(csize, in, out, temp); break;
+        case TUPL3_2: good = d_TUPL3_2(csize, in, out, temp); break;
+        case TUPL3_8: good = d_TUPL3_8(csize, in, out, temp); break;
+        case TUPL4_1: good = d_TUPL4_1(csize, in, out, temp); break;
+        case TUPL4_2: good = d_TUPL4_2(csize, in, out, temp); break;
+        case TUPL6_1: good = d_TUPL6_1(csize, in, out, temp); break;
+        case TUPL6_2: good = d_TUPL6_2(csize, in, out, temp); break;
+        case TUPL6_4: good = d_TUPL6_4(csize, in, out, temp); break;
+        case TUPL6_8: good = d_TUPL6_8(csize, in, out, temp); break;
+        case TUPL8_1: good = d_TUPL8_1(csize, in, out, temp); break;
+        case UZZR_1: good = d_UZZR_1(csize, in, out, temp); break;
+        case UZZR_2: good = d_UZZR_2(csize, in, out, temp); break;
+        case UZZR_4: good = d_UZZR_4(csize, in, out, temp); break;
+        case UZZR_8: good = d_UZZR_8(csize, in, out, temp); break;
+        /*##switch-device-encode-end##*/
+      }
+      pipeline >>= 8;
+    }
+    __syncthreads();
+    if (!good || (csize >= osize)) csize = osize;
+    if(tid==0){
+      d_insert_chunk_topk(chunk_id, static_cast<unsigned short>(csize), chain, topk, d_chunk_topks, d_chain_ids);
+    }
+  } while (true);
 }
 
 
@@ -1242,10 +1363,10 @@ static std::map<std::string, byte> getCompMap()
   components["TUPL6_4"] = 68;
   components["TUPL6_8"] = 69;
   components["TUPL8_1"] = 70;
-  components["UZZR_1"] = UZZR_1;
-  components["UZZR_2"] = UZZR_2;
-  components["UZZR_4"] = UZZR_4;
-  components["UZZR_8"] = UZZR_8;
+  components["UZZR_1"] = 71;
+  components["UZZR_2"] = 72;
+  components["UZZR_4"] = 73;
+  components["UZZR_8"] = 74;
   /*##component-map-end##*/
   return components;
 }
@@ -1536,109 +1657,6 @@ static std::vector<std::vector<byte>> getStages(std::map<std::string, byte> comp
   return comp_list;
 }
 
-static unsigned long long parseExplicitPipeline(const std::map<std::string, byte>& comp_name2num, const std::string& pipeline_str, int& pipeline_stages)
-{
-  unsigned long long chain = 0;
-  pipeline_stages = 0;
-
-  std::stringstream ss(pipeline_str);
-  std::string tok;
-  while (ss >> tok) {
-    if (pipeline_stages >= max_stages) {
-      fprintf(stderr, "ERROR: number of stages must be between 1 and %d\n\n", max_stages);
-      throw std::runtime_error("LC error");
-    }
-
-    auto it = comp_name2num.find(tok);
-    if (it == comp_name2num.end()) {
-      fprintf(stderr, "ERROR: unknown component name '%s'\n\n", tok.c_str());
-      throw std::runtime_error("LC error");
-    }
-
-    chain |= (unsigned long long)it->second << (8 * pipeline_stages);
-    pipeline_stages++;
-  }
-
-  if (pipeline_stages < 1) {
-    fprintf(stderr, "ERROR: empty pipeline in explicit pipeline list\n\n");
-    throw std::runtime_error("LC error");
-  }
-
-  return chain;
-}
-
-
-static std::vector<unsigned long long> getChains(std::map<std::string, byte> comp_name2num, char* const spec, int& stages, unsigned long long& algorithms)
-{
-  std::vector<unsigned long long> chains;
-  stages = 0;
-  std::string s(spec);
-  size_t start = 0;
-
-  while (start < s.size()) {
-    size_t end = s.find(';', start);
-    std::string item = (end == std::string::npos) ? s.substr(start) : s.substr(start, end - start);
-    const size_t l = item.find_first_not_of(" \t\n\r");
-    if (l != std::string::npos) {
-      const size_t r = item.find_last_not_of(" \t\n\r");
-      item = item.substr(l, r - l + 1);
-      int pstages = 0;
-      chains.push_back(parseExplicitPipeline(comp_name2num, item, pstages));
-      stages = std::max(stages, pstages);
-    }
-    if (end == std::string::npos) break;
-    start = end + 1;
-  }
-
-  algorithms = chains.size();
-  if (algorithms < 1) {
-    fprintf(stderr, "ERROR: need at least one algorithm\n\n");
-    throw std::runtime_error("LC error");
-  }
-
-  return chains;
-}
-
-
-static void printChains(std::vector<std::pair<byte, std::vector<double>>> prepros, std::map<std::string, byte> prepro_name2num, const std::vector<unsigned long long>& chains, const int stages, FILE* f = stdout)
-{
-  std::string prepro_num2name [256];
-  for (auto pair: prepro_name2num) {
-    prepro_num2name[pair.second] = pair.first;
-  }
-
-  if (f == stdout) {
-    printf("algorithms: %lld\n\n", (long long)chains.size());
-    if (prepros.size() > 0) {
-      printf("  preprocessors\n  -------------\n");
-      for (int i = 0; i < prepros.size(); i++) {
-        printf("  %s(", prepro_num2name[prepros[i].first].c_str());
-        bool first = true;
-        for (double d: prepros[i].second) {
-          if (first) first = false; else printf(", ");
-          long long val = d;
-          if (d == val) printf("%lld", val); else printf("%e", d);
-        }
-        printf(")");
-      }
-      printf("\n\n");
-    }
-
-    printf("  explicit pipelines\n  ------------------\n");
-    for (size_t i = 0; i < chains.size(); i++) {
-      printf("  %2zu: %s\n", i, getPipeline(chains[i], stages).c_str());
-    }
-    printf("\n");
-  } else {
-    fprintf(f, "algorithms, %lld\n\n", (long long)chains.size());
-    fprintf(f, "explicit pipelines\n");
-    for (size_t i = 0; i < chains.size(); i++) {
-      fprintf(f, "%zu, %s\n", i, getPipeline(chains[i], stages).c_str());
-    }
-    fprintf(f, "\n");
-  }
-}
-
 
 static void printStages(std::vector<std::pair<byte, std::vector<double>>> prepros, std::map<std::string, byte> prepro_name2num, std::vector<std::vector<byte>> comp_list, std::map<std::string, byte> comp_name2num, const int stages, const unsigned long long algorithms, FILE* f = stdout)
 {
@@ -1739,8 +1757,6 @@ static void printUsage(char* argv [])
   printf("USAGE: %s input_file_name PR \"[preprocessor_name ...]\" \"component_name_regex [component_name_regex ...]\" [\"verifier\"]\n", argv[0]);
   printf("USAGE: %s input_file_name CR \"[preprocessor_name ...]\" \"component_name_regex [component_name_regex ...]\"\n", argv[0]);
   printf("USAGE: %s input_file_name EX \"[preprocessor_name ...]\" \"component_name_regex [component_name_regex ...]\" [\"verifier\"]\n", argv[0]);
-  printf("USAGE: %s input_file_name PRL \"[preprocessor_name ...]\" \"pipeline1 ; pipeline2 ; ...\" [\"verifier\"]\n", argv[0]);
-  printf("USAGE: %s input_file_name CRL \"[preprocessor_name ...]\" \"pipeline1 ; pipeline2 ; ...\"\n", argv[0]);
   printf("USAGE: %s input_file_name TS\n", argv[0]);
   printf("\n");
   printPreprocessors();
