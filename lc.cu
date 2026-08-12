@@ -178,7 +178,7 @@ int main(int argc, char* argv [])
     prepros = getItems(prepro_name2num, argv[3]);
     comp_list = getStages(comp_name2num, argv[4], stages, algorithms);
     if (algorithms < 1) {fprintf(stderr, "ERROR: need at least one algorithm\n\n"); throw std::runtime_error("LC error");}
-    conf = {false, false, false, false, false, false, true};  // -speed, -size, -warmup, -memcopy, -decom, -verify, +csv
+    conf = {true, false, true, false, false, false, true};  // +speed, -size, +warmup, -memcopy, -decom, -verify, +csv
     ext = ".CR" + std::to_string(stages);
   } else if (strcmp(argv[2], "EX") == 0) {  // exhaustive with all metrics
     if ((argc != 5) && (argc != 6)) {printUsage(argv); return -1;}
@@ -622,7 +622,6 @@ int main(int argc, char* argv [])
 
   std::vector<double> algorithm_timings;
   algorithm_timings.reserve(static_cast<std::size_t>(algorithms));
-
   if (algorithms > 0) {
     unsigned long long combin = 0;
     int carrypos;

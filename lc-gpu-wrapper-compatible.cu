@@ -82,6 +82,7 @@ int launch_device_CR_topk_chunk_best(byte* d_input, unsigned long long insize, i
   cudaMemset(d_chunk_topks, 0xff, entries*sizeof(unsigned short));
   cudaMemset(d_chain_ids, 0xff, entries*sizeof(unsigned long long));
   unsigned long long combin = 0;
+  unsigned long long pipelines_evaluated=0; //for testing. Makes sure we evaluate each potential pipeline
   int carrypos;
   do{
     unsigned long long chain = 0;
@@ -90,6 +91,7 @@ int launch_device_CR_topk_chunk_best(byte* d_input, unsigned long long insize, i
       chain |= compnum<<(s*8);
     }
     d_reset<<<1,1>>>();
+    ++pipelines_evaluated;
     d_get_chunk_topk_best_CR<<<blocks,TPB>>>(
       chain,
       d_input,
@@ -104,9 +106,14 @@ int launch_device_CR_topk_chunk_best(byte* d_input, unsigned long long insize, i
     do{
       combin+=1ULL<<(carrypos*8);
       if(((combin>>(carrypos*8)) & 0xff)<comp_list[carrypos].size()) break;
+      combin &= ~(0xffULL << (carrypos * 8));
       carrypos++;
     } while(carrypos<parsed_stages);
   }while(carrypos<parsed_stages);
+  if (pipelines_evaluated != algorithms) {
+  throw std::runtime_error("pipeline enumeration count mismatch: evaluated " +
+    std::to_string(pipelines_evaluated) + ", expected " + std::to_string(algorithms));
+  }
   return 0;
 }
 
