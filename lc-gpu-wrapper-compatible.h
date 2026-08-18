@@ -1207,6 +1207,14 @@ static std::string getPipeline(unsigned long long pipeline, const int stages)
   return s;
 }
 
+int so_getPipeline(unsigned long long chain, int stages, char* output, std::size_t output_size)
+{
+  const std::string value = getPipeline(chain, stages);
+  const std::size_t required = value.size()+1; //+1 for null terminator
+  std::memcpy(output ,value.c_str(), required);
+  return 0;
+}
+
 
 static std::map<std::string, byte> getPreproMap()
 {
