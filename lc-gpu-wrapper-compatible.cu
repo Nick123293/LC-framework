@@ -65,9 +65,7 @@ int launch_device_CR_topk_chunk_best(byte* d_input, unsigned long long insize, i
   if (static_cast<unsigned long long>(topk)>algorithms){
     /*Avoids returning more compressed_bytes values then there are 
     potential pipelines, which would cause undefined behavior*/
-    throw std::runtime_error(
-      "topk exceeds the number of pipelines"
-    );
+    topk = algorithms;
   }
   //GPU info
   cudaSetDevice(0);
