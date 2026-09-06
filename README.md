@@ -73,6 +73,17 @@ You may have to adjust these commands and flags to your system and compiler. For
 The generate_Hybrid_LC-Framework.py script is only for testing and should not be used as it generates slow code.
 
 
+### GPU Timing Methodology
+
+GPU pipeline timing measures only the `d_encode` kernel. Allocation, chunk-counter reset, and carry-buffer initialization are completed before the CUDA start event. Each pipeline is timed 11 times by default in shuffled, interleaved rounds, and LC reports the minimum, p10, median, mean, p90, and maximum. The median is used for throughput and Pareto calculations.
+
+Set `LC_TIMING_REPETITIONS` to change the number of samples. For example:
+
+    LC_TIMING_REPETITIONS=51 ./lc input.dat CR "" ".+"
+
+For meaningful results, run on an otherwise idle GPU. Shuffling and percentile reporting expose transient contention but cannot remove interference from another GPU workload.
+
+
 ### Usage Examples for Lossless Compression Algorithms
 
 The following examples assume you have a file called *input.dat* in the current directory and want to find a good compression algorithm for it. See below for a description of the available preprocessors and components.
